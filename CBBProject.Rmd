@@ -1,0 +1,548 @@
+---
+title: "Final Project"
+author: "Blaine G. Koertje & Adam Epstein"
+date: "12/2/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+chooseCRANmirror(graphics = FALSE, ind = 1)
+knitr::opts_chunk$set(echo = TRUE)
+initial.cbb.data <- read.csv('/Users/Blaine/Desktop/kenpomdata.csv', stringsAsFactors = T)
+install.packages('lars')
+library(lars)
+library(stringr)
+library(MASS)
+library(ggplot2)
+library(glmnet, quietly = TRUE)
+library(faraway)
+```
+#Pre-processing and Cleaning Data
+```{r cleaning data}
+#Calling head() on the data frame initial.cbb.data to observe the layout
+head(initial.cbb.data)
+# After calling the data frame initial.cbb.data there is an observed special character
+# attached to the end of each Team name, that was included from excel which we used to 
+# create our csv file, I am going to remove the team name category. All teams have a ranking
+# which corresponds to the index they are stored at. We can store team names as a separate
+# vector which will maintain the index.
+teamNames <- initial.cbb.data$Team
+teamNames #call to make sure the right data was stored in teamNames variable
+# Next we will remove the special excel character attached to the end of each team name
+teamNames <- str_extract_all(teamNames,"[A-Z a-z]+")
+#Now that teamNames is stored in a separate vector we will remove teamNames from the data set
+initial.cbb.data <- initial.cbb.data[,-2]
+head(initial.cbb.data)
+# Also since each team ranking is synonymous with it's index we will also remove the rank column
+teamRank <- initial.cbb.data$Rank
+head(teamRank) #integer values 1 through 100
+initial.cbb.data <- initial.cbb.data[,-1]
+head(initial.cbb.data)
+```
+# Check for any NA values in the dataset
+```{r}
+sum(is.na(initial.cbb.data))
+##The sum is 0, meaning that there are no NA's in the dataset
+```
+# Next we seprated the response column from the dataset
+```{r}
+#In our model our response is going to be total number of wins
+teamWins <- initial.cbb.data$Wins
+# Now that teamWins is stored as a vector, we can remove it from the dataset
+# Wins is stored as the first column
+cleaned.cbb.data <- initial.cbb.data[,-1]
+head(cleaned.cbb.data) # Double check to make sure that wins is removed from the dataset
+
+```
+# Then we will find and remove columns with little variation
+```{r}
+# We calculate the coefficients of variation by dividing the sample standard deviation by the
+# sample mean. This will tell us the variations that happens for each feature in the dataset
+# we will get rid of any features that have variance < 0.05
+
+#all of the features in cleaned.cbb.data is of the numeric type
+#Calculate sample means for each feature
+column.sample.mean <- colMeans(cleaned.cbb.data)
+column.sample.mean 
+#Calculate sample standard deviations for each feature
+column.sample.std <- apply(cleaned.cbb.data,2,sd)
+column.sample.std
+#Calculate Coefficients of Variations
+coef.variation <- column.sample.std/column.sample.mean
+coef.variation
+
+#Next we call summary of coef.variation to observe
+summary(coef.variation)
+#Plotting coefficient of variation against the median value, we see that there are only
+# two features which have enough variance that would be ideal to keep: luck and AdjEM.1
+# However, when we create a model with just those two variables our multiple R-squared value
+# falls from 0.94 to 0.33, so we are losing a lot of explained data.
+invisible(plot(coef.variation, main= 'Figure 1: Coefficient of Variation') + 
+            abline(h = median(coef.variation), col ='blue') + abline(h = 0, col = 'red'))
+# Initially our strategy was to remove any features that have a coefficient of variation
+# less than 0.05, however our median variation is 0.4252, so instead we will remove any features
+# that are less than or equal to the 1st quartile coefficient of variation = 0.03164
+featuresToKeep <- which(coef.variation > 0.03164)
+length(featuresToKeep)
+featuresToDrop <- which(coef.variation <= 0.03164)
+length(featuresToDrop)
+# We are removing three variables from our dataset (OppO, OppD, AdjEM.2), which is fine because
+# the information contained in those variables are used in the variables we are keeping
+cleaned.cbb.data <- cleaned.cbb.data[,featuresToKeep]
+head(cleaned.cbb.data) # contains the 7 variables we want
+```
+##Simple Linear Regression Model
+```{r}
+cbb.regr <- lm(teamWins~cleaned.cbb.data$AdjEM+cleaned.cbb.data$AdjO+cleaned.cbb.data$AdjD+cleaned.cbb.data$AdjT+cleaned.cbb.data$Luck+cleaned.cbb.data$AdjEM.1+cleaned.cbb.data$PtsPerGame, data = cleaned.cbb.data)
+#save summary of initial model
+summary.cbb.regr <- summary(cbb.regr)
+summary.cbb.regr
+# In our summary we have a residual standard error of 1.319 which is pretty good, actually it is 
+# outstanding. Also our Multiple R-squared value = 0.9444 which suggests that 94% of our variance # is explained, which is also outstanding. Even our Adjusted R-squared value is 0.9402 which 
+# still suggests that 94% of our variance is explained. 
+
+AdjEM.beta.hat <- cbb.regr$coefficients[2]
+AdjO.beta.hat <- cbb.regr$coefficients[3]
+AdjD.beta.hat <- cbb.regr$coefficients[4]
+AdjT.beta.hat <- cbb.regr$coefficients[5]
+Luck.beta.hat <- cbb.regr$coefficients[6]
+AdjEM1.beta.hat <- cbb.regr$coefficients[7]
+PtsPerGame.beta.hat <- cbb.regr$coefficients[8]
+
+#Under the assumption of a confidence level of 95% we want to keep variables with p-values < 0.05
+index.sig.features <- which(summary.cbb.regr$coefficients[2:nrow(summary.cbb.regr$coefficients),4] < 0.05)
+index.sig.features
+# Only two features from the data are statistically significant, Luck and AdjEM.1
+```
+#Plots
+```{r}
+#Residual vs Fitted Values from cbb.regr
+plot(y = residuals(cbb.regr), x = fitted.values(cbb.regr))
+abline(h = 0, col = 'red')
+# In the above code we plotted the residuals from cbb.reg against the fitted.values from cbb.reg.
+# We want constant variance, and the data points to be clost to the redline, which would indicate
+# that the estimators are close to the actual values. We see constant variance, but linearity is 
+# not clear from this plot.
+
+#Next we will plot the response versus all predictor variables in the model
+
+#teamWins vs AdjEM: In this plot we can see a linear trend that shows us the higher the AdjEM 
+# value is, the more wins a team may have. AdjEM stands for adjusted efficiency margin, which is 
+# the difference between AdjO and AdjD. 
+regr <- lm(teamWins~cleaned.cbb.data$AdjEM)
+plot(x = cleaned.cbb.data$AdjEM, y = teamWins)+abline(regr, col = 'red')
+
+#teamWins vs AdjO: Each datapoint represents a team, and we can observe that a team with a 
+# high AdjO (adjusted offense) rating, will likely have more wins. AdjO is adjusted offense
+# and is a rating that suggests how many points a team will score per 100 possessions agains
+# an average NCAA D-1 defense. A high AdjO raintg suggests a high-powered offensive team
+regr <- lm(teamWins~cleaned.cbb.data$AdjO)
+plot(x = cleaned.cbb.data$AdjO, y = teamWins) + abline(regr, col = 'red')
+
+#teamWins vs AdjD: Here we see an inverse trend in relation to the two previous plots, which is
+# a good thing. AdjD is an adjusted defense rating, which tells us per 100 possessions how many
+# points will be scored against that team against an average NCAA D-1 offense. The lower the AdjD
+# rating the better, since a lower value suggests a better defense.
+regr <- lm(teamWins~cleaned.cbb.data$AdjD)
+plot(x = cleaned.cbb.data$AdjD, y = teamWins)+abline(regr, col = 'red')
+
+#teamWins vs AdjT: AdjT stands for adjusted tempo, and offers an estimate as to how many 
+# possessions a team would have in a 40-minute basketball game against a team that has
+# an average NCAA-D1 Men's basketball tempo. We do not see any significant trends like we did
+# in the other plots, however there is a slight downward trend suggesting that a team with lower # tempo will win more games, probably due to the fact that they have an organized offense. 
+# A lower tempo suggests a team  runs organized plays, which suggests that a team that runs
+# organized plays will get better shots, than a team that has no organized offense. However, 
+# these are assumptions, and the trend is not significant enough visually.
+regr <- lm(teamWins~cleaned.cbb.data$AdjT)
+plot(x = cleaned.cbb.data$AdjT, y = teamWins)+abline(regr, col = 'red')
+
+#teamWins vs Luck: Luck is a stat that attempts to explain the difference between a team's actual # winning percentage and an expected win percentage based on a team's game by game efficiencies.
+# Basically, a team involved in a lot of close games is not expected to win all of them, those
+# that do are considered lucky.
+# The line of regression suggests that a team that has more luck will have more #wins, but upon  # observing the data points, I do not see a trend strong enough to suggest that. There are teams # with more wins but less luck than other teams that have more luck, and less wins. I assume 
+# that the teams with the most wins, are just better teams which was indicated by 
+# some of the above plots. Although luck certainly does play a factor into the amount of wins
+# a team will have.
+regr <- lm(teamWins~cleaned.cbb.data$Luck)
+plot(x= cleaned.cbb.data$Luck, y = teamWins) + abline(regr, col = 'red')
+
+# teamWins vs AdjEM.1: AdjEM.1 is the adjusted efficiency margin based on the team you are 
+# playing. Like the plain AdjEM, AdjEm.1 is found by the difference in OppO - OppD. It is 
+# a rating that tries to define the average strength of the opponents one team matches up against # all season. Essentially this is a strength of schedule rating. The plot's line of regression
+# suggests that there is a downward trend between the number of wins by a team, and the AdjEM.1 
+# rating. This is intuitive, you will not win as many games if you are playing better teams. 
+# By observing the datapoints alone, you see a slight trend in that direction.
+regr <- lm(teamWins~cleaned.cbb.data$AdjEM.1)
+plot(x = cleaned.cbb.data$AdjEM.1, y= teamWins) + abline(regr, col = 'red')
+
+#teamWins vs Points Per Game: Intuitively one would think that the more points a team scores,
+# the more wins a team would have. The data slightly suggests that, but there are teams that 
+# score a lot of points, but play no defense and give up more points than they score. This trend
+# isn't observed for every team, but I think it is a fair assumption.
+regr <- lm(teamWins~cleaned.cbb.data$PtsPerGame)
+plot(x = cleaned.cbb.data$PtsPerGame, y = teamWins) +abline(regr, col = 'red')
+```
+
+# Diagnostics in Multiple Regression
+
+#Normality and Non-Constant Variance
+```{r}
+# First, we will plot the residuals vs the fitted values from the simple linear regression
+# model, cbb.regr. We are looking at information suggested by the plot
+
+# Observations from code below: In the first plot plot between the residuals from our model 
+# cbb.regr, and it's fitted values we observe slight heteroscedasticity (non-constant variance), # and slight linearity with some  # outliers as well. In the following QQ-Plot the data points 
+# are centered on the line of regression, except on the ends which we see some slight quadratic  # behavior, this indicates normality. We may perform a transformation on y, to try to fit the 
+# data to line in a more efficient way. Overall I am fairly happy with these plots.
+
+# Residuals vs Fitted Values
+plot(y = residuals(cbb.regr), x = fitted.values(cbb.regr), xlab = "Fitted Values", ylab = "Residuals", main = "CBB Regr: Residuals vs Fitted Values") + abline(h= 0, col = 'red')
+
+#QQ-plot
+regr <- lm(teamWins~AdjEM+AdjO+AdjD+AdjT+Luck+AdjEM.1+PtsPerGame, data = cleaned.cbb.data)
+qqnorm(residuals(regr), ylab = "Residuals", main = "Residuals vs. Theoretical Quantities")
+qqline(residuals(regr))
+
+#Histogram: One main takeaway from the histogram is that we have the expected bell shape.
+# This indicated normality in our residuals which that our least squares estimates 
+# will be "BLUE" (Best Linear Unbiased Estimators)
+hist(x = residuals(regr), xlab = "Residuals", ylab = "Frequency", main = "Histogram of Residuals")
+
+#BoxCox : Transformation on the resonse
+boxCoxPlot <- boxcox(cbb.regr, plotit = T, lambda = seq(0,3, by = 0.5)) 
+# We want the peak of the solid black curve as our lambda which is the done in the code below
+lambda <- boxCoxPlot$x[which.max(boxCoxPlot$y)] 
+lambda
+# This is the optimal transformation on our response, teamWins. We will take teamWins to the 
+# power of lambda, and then observe the plots again.
+# Refit the model with a boxcox transformation on y
+boxcox.regr <- lm(teamWins^lambda ~  AdjEM + AdjO + AdjD + AdjT + Luck + AdjEM.1+PtsPerGame, data = cleaned.cbb.data)
+summary(boxcox.regr)
+plot(boxcox.regr)
+#New plots with the transformed model
+
+#Residuals Vs Fitted Values for boxcox.regr: In this plot we see constant variance, and linearity because the data points look to be equal on both sides of the line where h = 0. This is an excellent plot.
+plot(x = fitted.values(boxcox.regr), y = residuals(boxcox.regr), xlab = "Fitted Values", ylab = "Residuals", main = "BoxCox.regr: Residuals vs Fitted Values") + abline(h = 0, col = 'red')
+
+#QQ-Plot: In this plot the data looks like it is a better fit to the line, however there is still some quadratic behavior on the both ends, and maybe even outliers. The QQ-plot for the most part indicated normality. 
+qqnorm(residuals(boxcox.regr), ylab = "Residuals", main = "Residuals vs. Theoretical Quantities")
+qqline(residuals(boxcox.regr))
+
+#Histogram: We still have a slight bell like shape in the histogram, which suggests constant variance, or equally distributed variance, and normality which allows us to assume that our least-squares estimators are BLUE.
+hist(x = residuals(boxcox.regr), xlab = "Residuals", ylab = "Frequency", main = "Histogram of Residuals")
+
+#More formal test for normality on the transformed model using a shapiro-wilk test. In a Shapiro-Wilk test there is a null hypothesis: the residuals are normal, and an alternative hypothesis: the residuals are not normal. If one of these hypothesis is true, then you can assume that the data is the same as the residuals in regards to being normal or not. The results of the Shapiro-Wilk test on boxcox.regr returned a p-value = 0.2795 which is greater than 0.05, and allows us to Fail To Reject the null hypothesis, suggesting our residuals and data are from a normal distrbution. 
+shapiro.test(residuals(boxcox.regr))
+
+
+#Since we are trying to predict the number of wins a team will have in a season based on the features of our model, it is important that we take our response to the power of the exact lambda value. We want to be as precise as possible.
+
+
+# Shapiro-Wilk Test for Normaility: A Shapiro Wilk test is basically a KS-Test, however the Shapiro-Wilk test is specifically for testing normality.
+# Side Note: I decided to perform the shapiro-wilk test on the old regressions model that does not have a response taken to the power of lambda. I was just curious how normal our residuals and data would be even without the transformation. 
+#Null Hypothesis: The residuals are normal -- We will not reject if p-value > 0.05
+#Alternative Hypothesis: The residuals are not normal -- reject if p-value is small
+shapiro.test(residuals(cbb.regr))
+# Test Results: Since we have a p-value = 0.3173 we will FAIL TO REJECT the null hypothesis
+# and make the assumption that are residuals are normal as well as the data.
+```
+
+## Leverage Points: Rule of thumb-> an average value for h_i = p/n, any leverages of more than 2p/n should be looked at closely
+```{r}
+# Provides 100 values that should sum to the number of parameters in our model
+hatv <- hatvalues(boxcox.regr)
+head(hatv)
+#The sum of all the hat values should be equal to p (8), which is correcct
+sum(hatv)
+
+# Next we would like to identify unusually large values of leverage by using a half-normal plot
+# In this plot we find that our two largest leverage points are Virginia, and VCU.
+# We also included a QQ-plot of the standardized residuals, and expect the points to follow the line y = x which it does, so normality is again assumed.
+halfnorm(hatv, labs = teamNames, ylab = "Leverages")
+{qqnorm(rstandard(boxcox.regr)) 
+abline(0,1)}
+
+#Store the leverage points by index, and in decreasing order, so the first index will hold the largest leverage point
+leverage.index <- sort(hatv, index = T, decreasing = T)$ix
+hatv[leverage.index]
+# By observing hatv[leverage.index] I find that the first 4 leverage points are much larger than the rest so I will save those leverage points in a vector, they could be used in scaling residuals. to get the actual team names that are the leverage points call the indexes stored in points on teamNames
+leverage.points <- c(hatv[leverage.index[1:4]])
+```
+#Outliers: A point that does not fit the current model well. It is important to be aware of outliers because it enables us to differentiate between an unusual observation, and residuals that are large but not unusual
+```{r}
+# Step 1) Compute stundentized residuals for our model
+stud <- rstudent(boxcox.regr)
+stud[which.max(abs(stud))]
+# We have the largest residual at index 2 = -3.37561 (Gonzaga)
+# will store the 10 largest outliers
+index.of.stud.residuals <- sort(abs(stud), index = T, decreasing = T)$ix
+
+range(rstudent(boxcox.regr))
+# To determine if this value is in fact an outlier we must compute the Bonferroni critical value, and also check if it is also an influential point
+```
+
+#Influential Points: a point whose removal would cause a large change in fit. An influential point may or may not be an outlier, and it may not have leverage. An influential point will usually have one of these characteristics
+```{r}
+#strategy: Use halfnorm with cooks distance
+cook <- cooks.distance(boxcox.regr)
+halfnorm(cook,3, labs = teamNames, ylab = "Cook's Distances")
+
+#Store the 10 most influential points
+cook.index <- sort(cook, index = T, decreasing = T)$ix
+influential.points <- c(cook.index[1:10])
+
+# This plot identified our three most influential points 
+# We will now exclude the largest one (Gonzaga), and see how the fit changes
+cook.regr <- lm(teamWins~AdjEM+AdjO+AdjD+AdjT+Luck+AdjEM.1+PtsPerGame, data = cleaned.cbb.data, subset = (cook < max(cook)))
+summary(cook.regr)
+summary(boxcox.regr)
+
+# When comparing the model cook.regr which excludes the largest influential point, to the summary of the full model we see that the range of the residuals became more compact, AdjEM shrunk by 1/6, AdjO grew exponentially, AdjD decreased by 1/10, AdjT became smaller, Luck shrunk by roughly half, AdjEM.1 shrunk slightly, and PtsPerGame shrunk slightly. Not the actual values but the coefficients associated with each feature.
+
+# We can plot the change in estimate for AdjO
+{plot(dfbeta(boxcox.regr)[,2], ylab = "Change in AdjO")
+  abline (h = 0)}
+
+#Plot change in AdjEm
+{plot(dfbeta(boxcox.regr)[,1], ylab = "Change in AdjEM")
+  abline (h = 0)}
+
+#plot change in AdjD
+{plot(dfbeta(boxcox.regr)[,3], ylab = "Change in AdjD")
+  abline (h = 0)}
+
+#plot change in AdjT
+{plot(dfbeta(boxcox.regr)[,4], ylab = "Change in AdjT")
+  abline (h = 0)}
+
+#Plot change in Luck
+{plot(dfbeta(boxcox.regr)[,5], ylab = "Change in Luck")
+  abline (h = 0)}
+
+#Plot change in AdjEM.1
+{plot(dfbeta(boxcox.regr)[,6], ylab = "Change in AdjEM.1")
+  abline (h = 0)}
+
+#Plot chnage in PtsPerGame
+{plot(dfbeta(boxcox.regr)[,7], ylab = "Change in PtsPerGame")
+  abline (h = 0)}
+
+#Since influential points can be both an outlier, and a leverage point which may change the fit of the model significantly we use cook's distance to look more closely at these idenitified points.
+
+#Leverage Point Index: 1, 42, 87, 2
+#Influential Points index: 2, 99, 45, 73, 51, 42, 11, 18, 93, 58
+#Outliers Index: 2, 99, 11, 45, 77, 51, 96, 31, 47, 73
+
+#summary of full model
+summary(boxcox.regr)
+
+model.cook.1 <- lm(teamWins~AdjEM+AdjO+AdjD+AdjT+Luck+AdjEM.1+PtsPerGame, data = cleaned.cbb.data, subset = (cook < max(cook)))
+summary(model.cook.1)
+
+model.cook.2 <- lm(teamWins~AdjEM+AdjO+AdjD+AdjT+Luck+AdjEM.1+PtsPerGame, data = cleaned.cbb.data, subset = (cook < head(max(cook))))
+summary(model.cook.2)
+
+#nothing changed in either model, they are both the same
+
+```
+
+#LASSO:
+```{r}
+require(lars)
+regr.matrix <- model.matrix(teamWins~AdjEM+AdjO+AdjD+AdjT+Luck+AdjEM.1+OppO+OppD+AdjEM.2+PtsPerGame, data = initial.cbb.data)[,-1]
+summary(regr.matrix)
+#create a grid of lambdas
+grid.lambda <- 10^seq(10, -2, length = 100)
+#set response equal to wins
+y <- initial.cbb.data$Wins
+#create lasso regression model using glmnet
+lasso.regr <- glmnet(regr.matrix, y, alpha = 1, lambda = grid.lambda)
+#divid the data into training data and test data
+training.data <- sample(1:nrow(regr.matrix), nrow(regr.matrix) / 2)
+testing.data <- (-training.data)
+yTraining <- y[training.data]
+yTesting <- y[testing.data]
+
+# Next, we will fit lasso.regr onto the training data
+lasso.regr.train <- glmnet(regr.matrix[training.data,],yTraining,alpha = 1, lamda = grid.lambda)
+
+#In order to find the best value for lambda we have to perform cross-validations
+set.seed(1)
+cv.out <- cv.glmnet(regr.matrix[training.data, ], yTraining, alpha = 1)
+plot(cv.out)
+
+#save the best value for lambda: save the min lambda since we want to minimize lambda in LASSO,
+# plot cv.out and add green line that will highlight the best lambda value
+best.lambda <- cv.out$lambda.min
+{plot(cv.out)
+  abline(v = log(best.lambda), col = 'green', lwd = 2)}
+
+# Next we find MSPE of the training set
+lasso.predict <- predict(lasso.regr.train, s = best.lambda, newx = regr.matrix[testing.data,])
+lasso.mspe <- mean((lasso.predict- yTesting)^2)
+lasso.mspe # equals 1.563869
+
+#fit the lasso model using the best lambda
+cbb.final <- glmnet(regr.matrix, y, alpha = 1, lambda = best.lambda)
+lasso.coefficient <- coef(cbb.final)[1:11,]
+lasso.coefficient
+predict.lasso <- predict(cbb.final, s = best.lambda, newx = regr.matrix[testing.data,])
+cbb.lasso <- cbind(y[testing.data],predict.lasso)
+summary(cbb.lasso)
+cbb.lasso
+#In the data frame cbb.lasso there are the rownames which are equal to the teams from the testing.data, Column 1 is "Actual Wins" from the 2018-2019 season, and the second column "Predicted Wins" is the prediction we are making as to how many wins they should achieve in a season.
+
+```
+ 
+ Write Up:
+
+1) Statement of question that you want to answer: 
+   Answer: Can we use linear regression to accurately predict the wins for a college basketball team in a season?
+ 
+2) What data will you analyze to answer your question? Identify at least one data source:
+   Answer: For this project I used a data set from Kenpom.com and I added a feature for total wins,
+           and points per game. I used the 2018-2019 Men's College Basketball Season dataset from 
+           last year. There were 100 observations and 11 variables to start from.
+          
+3) Overview of Project
+  a) What interests you about this subject?
+     Answer: Adam and I both have a love for college sports, especially basketball. I wanted to see initially 
+              if we could actually predict a score for each team, but that was harder than I thought, and I really was not
+              comfortable with the dataset we had. I didn't think there was enough information in the dataset to do that.
+               Instead we took a step back, and figured out a way to predict total wins in a season using linear regression.
+  b)Is this a prediction or explanatory task?
+     Answer: Our task was to try to create a model that would allow us to make a prediction about how many
+             games a given NCAA Division 1 Men's Basketball team would win in a season based on the features
+             we had available to us in our dataset.
+  c) What methods will you use on this data?
+     Answer: Well we started with a simple liner regression model, and then we built that model into
+             something better using the LASSO approach to make predictions. 
+  d) What challenges do you face in analyzing this data? For example, is variable selection important? 
+     What about transformations on the variables? Is there unstructured data involved?
+     Answer: First, we initially wanted to predict the score in a football game, but the only datasets we found online (Kaggle,etc.)
+             did not have enough information to be able to make a prediction about the score. The features were very lackluster, so we switched
+             directions and decided to make predictions about College Basketball. I had to create a dataset wth the relevant information, or at least
+             what I thought was relevant information. From our final outcome, I think we did a really good job as far as making predictions. The 
+             predicted values were very close to the actual values. I was surprised. I thought variable selection would be important, but with
+             LASSO it was pretty easy, they did everything for us. Initially when we just had our basic SLR model using coefficients of variation
+             to select variables, I was nervous because I didn't understand why the variables that were the most statistically significant were in
+             fact significant compared to the other features. From a basketball perspective it did not make sense, but we were able to account for
+             94% of the total variance, which was exciting. We did make a Box-Cox transformation even though the data was relatively normal according
+             to the Shapiro-Wilk test, and data plots. Since we are making predictions in this project it was important to have the exact lambda
+             we needed, we wanted to make sure we were precise. We just raised the response feature to the lambda power, which we calculated using
+             R. The data was very clean from the get-go, and structured very cleanly. We found our dataset on kenpom.com which is a website that provides              advanced analytics for college basketball, everything you find on the website was created by a professional statistician. He did most of                 pre-processing, and data clean-up for us. Which was very nice. 
+  e) Before running any models, what hypothesis do you have about your data?
+     Answer: We hypthesized that the most important features from our dataset would be Adjusted Efficiency Margin, which is a combined
+             measure of a team's offensive, and defensive efficiency. After we did run our models, and a created a qq-plot with the response
+             (team wins) against AdjEM, there was a linear trend in the visualization that showed the higher AdjEM rating a team had
+             the more the wins they were likely to achieve. One thing I did not account for when running our models, was how important Luck
+             would be towards how many wins a team achieves throughout the season. It was actually pretty interesting, and we found some
+             really good information that I am going to start applying towards my betting model for college basketball. 
+4) Analysis: All the code is above in the markdown file
+
+  a) Data Cleaning: First I had to add two columns to the dataset to make predicting how many wins a team will achieve in a season
+                    more viable. I added a column for total wins for 2018 season, and points per game for the 2018 season as well. There
+                    were no NA's in the data, but in the above section, 'pre-processing and cleaning data' we still went through the motions
+                    and looked for NA's, however when we summed them up we got a value equal to 0. We used excel to create the initial
+                    csv file, but excel added on a special character to the end of each Team's name. We had to work through that and strip
+                    the special excel character from the team name. After that we calculated the coefficient of variation, which then allowed
+                    us to check the variance of each column and eliminate any features that had little to no variance. Initially, I wanted to remove any 
+                    features that had a variance of less than 0.05, however after looking at the summary of the coefficient of variation I saw that 25% 
+                    of our columns had a variance of less than 0.03. We changed our mind, and decided to eliminate any column that had a variance that
+                    fell equal to or less than the first quartile. Pretty much any column that had a variance less than 0.03, we removed. We ended up
+                    removing three variables the dataset when we created our first model. The features were Adjusted Offense, Adjusted Defense, and 
+                    AdjEM.2 (which measures strength of schedule). This was pretty intuitive to me, because one of the most statistically
+                    significant features was AdjEM, and that takes into account for Adjusted Offense and Adjusted Defense within it's formula.
+ 
+  b) Exploratory Analysis: During this phase of the project we had a regression model with 8 variables out of the 11 we started with. After running 
+                           the summary function on our first model, we hade a Multiple R-Squared value = 0.9444, which indicates that with our data
+                           we have the ability to explain for over 94% of the total variance within the data. We also had a Residual Standard error 
+                           equal to 1.319, which made me very happy. Like I stated earlier I was very surprised to see how high the coefficient for 
+                           Luck was. We calculated the coefficient for Luck equal to 38.8316. The next highest coefficient was 2.0372, so I was very                                surprised by that. Our dataset only had data for the top 100 teams from last season. I didn't think luck would have been 
+                           as important as it was because all the teams we were analyzing were among the elite college basketball teams last season.
+                           I thought that they would have been more skilled, and relied less on luck. As far as the dataset goes, we had 100 observations
+                           (teams), and 11 variables. We had to understand how each feature was going to help explain the data. The first variable is 
+                           teamWins, which did not take into account losses. The next variable was AdjEM which is the total efficiency margin for a 
+                           team, and is calculated by Subtracting Adjusted offense from Adusted Defense. Adjusted Offense (AdjO) tells us how many
+                           points on average a team will score against an average Division 1 Men's College basketball defense per 100 possessions. 
+                           Adjusted defense (AdjD) tells us how many points an average offensive team will score per 100 possessions against a 
+                           specific team. Adjusted tempo (AdjT) is an estimate of the possessions a team will have per 40 minutes. or per game. Luck is 
+                           defined as if a team is involved in many close games, they are not expected to win all of them. If they do, that is considered
+                           "lucky." Luck is actually calculated as a penalty, and the higher a team's luck rating is
+                           the lower they will be rated in Kenpom's ranking hierarchy.Adjusted Efficienncy Margin.1 takes into account
+                           the opponent's Adjusted offense, and Adjusted defense. Theoretically if the teams, Team A is playing have 
+                           high AdjEM.1 ratings, then the win expectancy for team A will go down, because they are playing better teams. It is
+                           pretty intuitive, but it was cool to have a coefficient that shows how much a team's total wins will be affected 
+                           by this rating. For every 1 unit increase of a team's AdjEM.1 rating, their win expectancy falls by 1/2 of a win. I thought 
+                           that was pretty interesting. The last variable is Points Per Game, which I initially thought would have a more
+                           significant effect than it did. In fact, I probably could have not added that column, it didn't seem to be significant 
+                           at all. From the data exploration we hypothesized that A team with a higher AdjEM will have a higher total of wins. To have a
+                           high AdjEM a team has to have a high Adjusted Offensive rating(meaning they score a lot), and a low Adjusted Defense rating
+                           (they do not get scored on a lot). That was a pretty intuitive hypothesis. Also a team with a high luck rating will have more
+                           wins. 
+   
+    c) Variable Selection: Initially we just used the coefficient of variation to select our variables. We looked at the p-values 
+                           for each variable, and wanted to remove any features that had a p-value greater than 0.05. However, upon
+                           reading the summary of our first linear model, we had a residual standard error of 1.319 which is very good,
+                           and a Multiple R-Squared value, and Adjusted R-squared value that told us we could explain over 94% of the 
+                           variance. I didn't want to touch that. Actually I excluded the Points Per Game variable, for fun, and
+                           our Multiple R-Squared value grew, indicating that we should probably exclude that variable our all together. 
+                           However, I really did think that Points Per Game would be significant in determining a team's total
+                           wins, and I decided to leave it in the model until we tried to evolve our model later on in the project. In our model
+                           we ended up keeping the variables: AdjEM, AdjO, AdjD, AdjT, Luck, AdjEM.1, and Points per game. I was ok with those variables 
+                           because I thought it was intuitive that those variables stayed in the model. 
+                           
+    d) Check the Assumptions of the Model: The first thing we did was create a plot that measured the residuals of the model vs the fitted values. In                                               this kind of plot were hoping to see constant-variance (homoscedascity), and a linear trend with data 
+                                           grouped around the 0-line. Luckily for us, we saw that right away. We didn't have to do anything to stabilize
+                                           the variance. We were pretty lucky in that regard, we had real good data. Right away, we were able to assume
+                                           linearity, and homoscedascity. Next, we plotted the response (teamWins) against each variable in our model to 
+                                           look for any linear trends visually. We saw that there was an upward linear trend between teamWins, and 
+                                           AdjEM, as well as Adjusted offense. There was a negative trend when we plotted the response against Adjusted
+                                           defense, which made sense. The higher an Adjusted defensive rating is, the more points are being scored on 
+                                           that team which implies less total wins. It's hard to win when you cannot stop anyone on defense. Next, we 
+                                           wrote the code to create a QQ-plot, and histogram of the residuals. The QQ-plot grew our confidence that our 
+                                           was normal, because the points lined up on the against the qqline. Normality was assumed, but just to be safe
+                                           we ran a Shapiro-Wilk test for normality. The null hypothesis being that the residuals are normal, and the 
+                                           alternative hypothesis being the latter. The test returned a p-value greater than 0.05, which allowed us to
+                                           Fail To Reject the null hypothesis, and make the assumption that our data was in fact normal. The histogram
+                                           returned a nice bell-shape throughout the graph which, again, allowed us to assume our residuals were normal,
+                                           and allowed us to assume that our estimators are in fact BLUE.After completing the Shapiro-Wilk test, we ran 
+                                           the boxcox function to find the best lambda in case we wanted to transform the response. We honestly didn't 
+                                           need to, just because all of the other tests we performed reinforced the assumptions of our model, but since
+                                           we were going to be making predictions, I thought it would behoove us receive an optimal lambda value, and 
+                                           transform the response. We received a lambda value of 1.111111, which was close to 1.Again, since we were 
+                                           going to be performing prediction, I thought it was best to transform the response by taking it to the power
+                                           of our lambda value. 
+                                           
+    e) Final Fit and interpretation: After we cleaned the data, explored the data, chose our variables, and check the assumptions of our model we were
+                                     ready to to do a final fit, and interpret the data. First we checked for leverage points. There were 4 that were                                         separated from the rest. I stored those in a vector, and then we used a half-norm plot to visually show our leverage                                      points. Next we looked for outliers, and I stored the ten highest outliers, or what may be outliers. I didn't want
+                                     to exlude them from our model right away, because there was a good possibility that those outliers were also
+                                     influential points, that would adjust the fit of the model if they were removed. After we identified our outliers
+                                     we would compare them against the Bonferroni critical vaue, that would indicate to us the likelihood of the possible
+                                     outliers actually being an outlier. Even then though we had to still check for influential points as well before we 
+                                     decided to remove any observtions from the data. To check for influential points we used Cook's distance, and a                                          halfnorm plot again. Gonzaga was actually an influential point, and upon removing that data point or observation 
+                                     from the dataset, our model changed greatly. I decided to leave that datapoint within the dataset. In the code above
+                                     I actually plotted the change in each variable after Gonzaga was removed. Then we created two models each with a 
+                                     different subset, in an attempt to see how the data performed with the contraints. Actually both models did not 
+                                     change at all even though, we had the two subsets. Every value stayed exactly the same, which doesn't seem right to
+                                     me, but I didn't want to ruin the model trying to do too much. Finally after performing all of that, we were ready
+                                     to move forward and start LASSO. We made a regression matrix that stored the full model, then we made a grid of 
+                                     lambdas. After storing the response as y, we created our first LASSO regression model using glmnet.Then we separated
+                                     the data into a training set, and a test set. Then we fit the LASSO regression model onto the training data before 
+                                     we performed cross-validation to obtain the best lambda value. Which from the plot is the minimum value along curve
+                                     unlike boxcox. We used our best lambda to calculate the MSPE of the model. Once we did that we were able to able
+                                     to fit the LASSO regression model, with the help of our best lambda, onto the test data. Lasso selected the 
+                                     variables: AdjEM, AdjD, Luck, AdjEM.1, OppO, and PtsPerGame to use in predicting how many wins a team should win
+                                     during the seasn. This was very similar to the first model we made using the coefficients fo variation to select
+                                     variables in the begining. However there were some difference. Lass didn't use AdjO where we did, and LASSO selected                                      OppD which we left out in our first model.We then made a data frame that used the team names from the test data as                                       row names, actual win for the first column, and the predicted amount of wins for the second column. I was actually                                       astonished by how accurate the prediction values were in comparison to the actual values. It's pretty amazing, and
+                                     something I would like to explore more. 
+                              
+5) Discussion: what more could you do with this project in the future? Was your hypothesis about the question correct? What do your results tell you                    about your question?
+                Answer: First of all, the results tell us that we can in fact predict a team's total wins for a season using linear regression. The 
+                results were spot on, and I still cannot believe it. It wasn't that hard either. In the future I want to use the same method, but to
+                predict an actual score for a game that I could use to bet against the spread. Sports bettins is a hobby of mine, so I might as well use                 what I am studying in school to support my "hobby," and try not to lose my rent money at the same time. I feel like predicted wins was 
+                pretty broad, and I just would love to get more specific in using data to predict outcomes. This is very exciting for me. Our hypothesis
+                was correct, but I feel like it was pretty intuitive when you actually understand what each variable is telling us. I wasn't surprised
+                by our hypothesis being correct, but I was so surprised by the predictions I was able to make, and how close to the truth they actually
+                were. 
+                  
